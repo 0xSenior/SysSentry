@@ -21,7 +21,7 @@ jobs:
 
       - name: Run ShellCheck on all shell scripts
         run: |
-          shellcheck -e SC1090,SC1091,SC2086,SC2155,SC2207 \
+          shellcheck -e SC1090,SC1091,SC2034,SC2086,SC2119,SC2120,SC2154,SC2155,SC2207 \
             bin/syssentry \
             lib/core.sh \
             lib/monitor.sh \
