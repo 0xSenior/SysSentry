@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+#
+# bin/syssentry — SysSentry CLI Dispatcher (Main Entrypoint)
+#
+# High-performance Linux CLI system utility for real-time resource monitoring,
+# rogue process governance, and automated resource-safe incremental backups.
+#
+# Subcommands:
+#   monitor   Capture and display a system resource snapshot
+#   backup    Run a timestamped full/incremental backup
+#   guard     All-in-one: monitor + backup (if healthy) + optional governance
+#   clean     Run retention cleanup on backup archives
+#   --help    Show help
+#   --version Show version
+#   --dry-run Simulate actions without making changes
+#
+# Namespace: CLI::
+
+set -euo pipefail
+
+###############################################################################
+# Bootstrap: locate library and config relative to this script
+###############################################################################
+SENTRY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SENTRY_LIB="${SENTRY_ROOT}/lib"
+SENTRY_CONFIG="${SENTRY_CONFIG:-${SENTRY_ROOT}/config/syssentry.conf}"
+
+# Source all modules (order matters: core first)
+# shellcheck source=lib/core.sh
+source "${SENTRY_LIB}/core.sh"
+# shellcheck source=lib/monitor.sh
+source "${SENTRY_LIB}/monitor.sh"
+# shellcheck source=lib/process.sh
+source "${SENTRY_LIB}/process.sh"
+# shellcheck source=lib/backup.sh
+source "${SENTRY_LIB}/backup.sh"
+
+###############################################################################
+# CLI state
+###############################################################################
+DRY_RUN=false
+VERBOSE=false
+
+###############################################################################
+# CLI::print_help
+###############################################################################
+CLI::print_help() {
+    cat <<EOF
+${Core_C_BOLD}${Core_C_CYAN}SysSentry${Core_C_RESET} v${Core_VERSION}
+A high-performance Linux CLI system utility for real-time resource monitoring,
+rogue process governance, and automated resource-safe incremental backups.
+
+${Core_C_BOLD}USAGE:${Core_C_RESET}
+  syssentry <subcommand> [options] [--dry-run]
+
+${Core_C_BOLD}SUBCOMMANDS:${Core_C_RESET}
+  monitor     Capture and display a real-time system resource snapshot
+              (RAM, CPU load, IO wait, health state)
+
+  backup      Run a timestamped full or incremental backup
+              Usage: syssentry backup <source> <dest> [full|incremental]
+
+  guard       All-in-one check: monitor health, run backup if safe,
+              and govern rogue processes
+
+  clean       Prune backup archives older than the retention window
+
+${Core_C_BOLD}GLOBAL OPTIONS:${Core_C_RESET}
+  --dry-run   Simulate actions without modifying the system
+  --help      Show this help message
+  --version   Show version information
+
+${Core_C_BOLD}EXAMPLES:${Core_C_RESET}
+  syssentry monitor
+  syssentry backup /home /var/backups/syssentry full
+  syssentry backup /var/www /mnt/backups incremental
+  syssentry guard --dry-run
+  syssentry clean /var/backups/syssentry 7
+  syssentry --version
+
+${Core_C_BOLD}CONFIG:${Core_C_RESET}
+  Edit ${SENTRY_CONFIG} (or copy config/syssentry.conf.example)
+  to tune thresholds, paths, and retention.
+
+${Core_C_BOLD}REPOSITORY:${Core_C_RESET}
+  https://github.com/0xSenior/SysSentry
+
+EOF
+}
+
+###############################################################################
+# CLI::cmd_monitor
+###############################################################################
+CLI::cmd_monitor() {
+    Core::banner "System Monitor"
+    Monitor::capture_snapshot
+    Monitor::display_snapshot
+    Core::log INFO "Monitor check complete (state=${Core_SYSTEM_SNAPSHOT[health_state]})"
+    return 0
+}
+
+###############################################################################
+# CLI::cmd_backup
+###############################################################################
+CLI::cmd_backup() {
+    local _source="${1:-}"
+    local _dest="${2:-}"
+    local _type="${3:-full}"
+
+    if [[ -z "${_source}" || -z "${_dest}" ]]; then
+        Core::log ERROR "Usage: syssentry backup <source> <dest> [full|incremental]"
+        return 1
+    fi
+
+    Core::banner "Backup Engine"
+
+    # Pre-flight safety gate
+    if ! Backup::pre_flight_check "${DRY_RUN}"; then
+        Core::log ERROR "Backup aborted due to CRITICAL system health"
+        return 1
+    fi
+
+    Backup::run_backup "${_source}" "${_dest}" "${_type}" "${DRY_RUN}"
+}
+
+###############################################################################
+# CLI::cmd_guard
+###############################################################################
+CLI::cmd_guard() {
+    local _source="${1:-$(Core::config_get backup_source /home)}"
+    local _dest="${2:-$(Core::config_get backup_dest /var/backups/syssentry)}"
+    local _govern="${3:-true}"
+
+    Core::banner "Guard (All-in-One)"
+
+    # 1. Monitor
+    Core::log INFO "Guard step 1/3: monitoring system health"
+    Monitor::capture_snapshot
+    Monitor::display_snapshot
+
+    # 2. Backup (only if not critical)
+    Core::log INFO "Guard step 2/3: backup pre-flight"
+    if Backup::pre_flight_check "${DRY_RUN}"; then
+        Backup::run_backup "${_source}" "${_dest}" "incremental" "${DRY_RUN}"
+    else
+        Core::log WARN "Guard: skipping backup (CRITICAL health)"
+    fi
+
+    # 3. Process governance (optional)
+    if [[ "${_govern}" == "true" ]]; then
+        Core::log INFO "Guard step 3/3: process governance"
+        Process::govern \
+            "$(Core::config_get warn_mem_percent 10)" \
+            "$(Core::config_get warn_cpu_percent 10)" \
+            "$(Core::config_get grace_seconds 5)"
+    fi
+
+    Core::log INFO "Guard cycle complete"
+    return 0
+}
+
+###############################################################################
+# CLI::cmd_clean
+###############################################################################
+CLI::cmd_clean() {
+    local _dest="${1:-$(Core::config_get backup_dest /var/backups/syssentry)}"
+    local _days="${2:-$(Core::config_get retention_days 7)}"
+
+    Core::banner "Retention Cleaner"
+    Backup::retention_clean "${_dest}" "${_days}" "${DRY_RUN}"
+}
+
+###############################################################################
+# Argument parsing & dispatch
+###############################################################################
+CLI::main() {
+    local _subcommand=""
+
+    # No args -> show help
+    if [[ $# -eq 0 ]]; then
+        CLI::print_help
+        return 0
+    fi
+
+    while [[ $# -gt 0 ]]; do
+        case "${1}" in
+            --dry-run)
+                DRY_RUN=true
+                shift
+                ;;
+            --help|-h)
+                CLI::print_help
+                return 0
+                ;;
+            --version|-v)
+                printf '%s v%s\n' "${Core_PROJECT_NAME}" "${Core_VERSION}"
+                return 0
+                ;;
+            monitor|backup|guard|clean)
+                _subcommand="${1}"
+                shift
+                break
+                ;;
+            *)
+                Core::log ERROR "Unknown argument: ${1}"
+                CLI::print_help
+                return 1
+                ;;
+        esac
+    done
+
+    # If a subcommand was selected, consume remaining positional args for it
+    case "${_subcommand}" in
+        monitor)
+            CLI::cmd_monitor "$@"
+            ;;
+        backup)
+            CLI::cmd_backup "$@"
+            ;;
+        guard)
+            CLI::cmd_guard "$@"
+            ;;
+        clean)
+            CLI::cmd_clean "$@"
+            ;;
+        *)
+            # No valid subcommand found
+            CLI::print_help
+            return 0
+            ;;
+    esac
+}
+
+###############################################################################
+# Entry point
+###############################################################################
+Core::init
+CLI::main "$@"

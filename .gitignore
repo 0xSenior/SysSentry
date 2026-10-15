@@ -1,0 +1,37 @@
+# =============================================================================
+# SysSentry .gitignore
+# Ignores archives, logs, runtime dumps, and local config overrides
+# =============================================================================
+
+# Runtime logs
+syssentry.log
+
+# Generated backup archives and snapshot files
+*.tar.gz
+*.snar
+/var/backups/syssentry/
+/backups/
+/archives/
+
+# Local configuration override (not committed)
+config/syssentry.conf
+
+# Temporary / runtime files
+*.tmp
+*.temp
+*.pid
+*.lock
+/tmp/syssentry*/
+
+# Editor / OS artifacts
+.*.swp
+.*.swo
+*~
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Test artifacts
+tests/*.log
+tests/coverage/
