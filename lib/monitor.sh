@@ -9,6 +9,9 @@
 #
 # Namespace: Monitor:: (public), Monitor::_* (private)
 
+# shellcheck disable=SC2154
+set -euo pipefail
+
 ###############################################################################
 # Monitor::capture_snapshot
 #

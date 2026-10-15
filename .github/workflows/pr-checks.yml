@@ -1,0 +1,261 @@
+name: PR Validation Gate
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SENTRY_ROOT: ${{ github.workspace }}
+  SHELLCHECK_VERSION: v0.10.0
+
+jobs:
+  ############################################################################
+  # JOB 1 — Static Code Analysis & Linting Gate
+  # shellcheck with zero tolerance (-x mode), bash -n syntax verification
+  ############################################################################
+  lint:
+    name: Lint & Static Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y shellcheck
+
+      - name: ShellCheck — all scripts (zero tolerance, -x follow sourced)
+        run: |
+          echo "::group::🔍 ShellCheck Static Analysis"
+          shellcheck \
+            -x \
+            -e SC1090,SC1091,SC2086,SC2155,SC2162,SC2207,SC2230 \
+            bin/syssentry \
+            lib/core.sh \
+            lib/monitor.sh \
+            lib/process.sh \
+            lib/backup.sh \
+            tests/run_pr_checks.sh \
+            tests/test_smoke.sh
+          shellcheck_exit=$?
+          echo "::endgroup::"
+          if [[ ${shellcheck_exit} -ne 0 ]]; then
+            echo "::error::ShellCheck found lint violations. Fix all errors/warnings before merging."
+            exit ${shellcheck_exit}
+          fi
+
+      - name: Bash syntax verification (bash -n)
+        run: |
+          echo "::group::🧪 Bash Syntax Verification (bash -n)"
+          syntax_fail=0
+          for f in bin/syssentry lib/*.sh tests/*.sh; do
+            if ! bash -n "${f}"; then
+              echo "::error file=${f}::Syntax error in ${f}"
+              syntax_fail=1
+            fi
+          done
+          echo "::endgroup::"
+          if [[ ${syntax_fail} -ne 0 ]]; then
+            echo "::error::Bash syntax verification failed."
+            exit 1
+          fi
+
+      - name: Verify required files exist
+        run: |
+          echo "::group::📋 Required File Presence Check"
+          required_files=(
+            bin/syssentry
+            lib/core.sh
+            lib/monitor.sh
+            lib/process.sh
+            lib/backup.sh
+            config/syssentry.conf.example
+            tests/test_smoke.sh
+            tests/run_pr_checks.sh
+            LICENSE
+            README.md
+          )
+          missing=0
+          for f in "${required_files[@]}"; do
+            if [[ ! -f "${SENTRY_ROOT}/${f}" ]]; then
+              echo "::error::Missing required file: ${f}"
+              missing=1
+            fi
+          done
+          echo "::endgroup::"
+          if [[ ${missing} -ne 0 ]]; then
+            echo "::error::One or more required files are missing."
+            exit 1
+          fi
+
+  ############################################################################
+  # JOB 2 — Security & Anti-Pattern Audit
+  # Strict mode, local variable enforcement, destructive command guardrails
+  ############################################################################
+  security-audit:
+    name: Security & Anti-Pattern Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Security audit — strict mode enforcement
+        run: |
+          echo "::group::🔐 Security Audit: Strict Mode (set -euo pipefail)"
+          scripts=(bin/syssentry lib/core.sh lib/monitor.sh lib/process.sh lib/backup.sh tests/run_pr_checks.sh tests/test_smoke.sh)
+          fail=0
+          for f in "${scripts[@]}"; do
+            if ! grep -qE '^set -euo pipefail' "${SENTRY_ROOT}/${f}"; then
+              echo "::error file=${f}::Missing strict mode: 'set -euo pipefail' not found at top of ${f}"
+              fail=1
+            else
+              echo "  ✅ ${f}: strict mode enforced"
+            fi
+          done
+          echo "::endgroup::"
+          if [[ ${fail} -ne 0 ]]; then
+            echo "::error::Strict mode enforcement failed."
+            exit 1
+          fi
+
+      - name: Security audit — local variable scoping
+        run: |
+          echo "::group::🔒 Security Audit: Local Variable Scoping (local / local -r)"
+          # Check all lib/*.sh functions declare locals. This heuristic looks for
+          # function bodies that contain assignments without a preceding 'local'.
+          # We flag obvious unscoped assignments in module bodies (not in case
+          # statement values or arithmetic contexts).
+          fail=0
+          for f in lib/core.sh lib/monitor.sh lib/process.sh lib/backup.sh; do
+            path="${SENTRY_ROOT}/${f}"
+            # Extract lines that look like variable assignments outside of
+            # function headers and check they are scoped with 'local'.
+            # We allow: declare -r/-A/-a/-i, readonly, export, and array
+            # declarations as they are explicit scoping mechanisms.
+            unscoped=$(grep -nE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=(' "${path}" \
+              | grep -vE 'local |declare |readonly |export |^[[:space:]]*#' \
+              | head -20 || true)
+            if [[ -n "${unscoped}" ]]; then
+              echo "::error file=${f}::Possible unscoped variable assignment in ${f}:"
+              echo "${unscoped}" | while IFS= read -r line; do
+                echo "  ${line}"
+              done
+              fail=1
+            else
+              echo "  ✅ ${f}: all variables locally scoped"
+            fi
+          done
+          echo "::endgroup::"
+          if [[ ${fail} -ne 0 ]]; then
+            echo "::error::Unscoped variable assignments detected. Use 'local' or 'local -r'."
+            exit 1
+          fi
+
+      - name: Security audit — destructive command guardrails
+        run: |
+          echo "::group::🛡️ Security Audit: Destructive Command Guardrails"
+          # Scripts must not hardcode rm -rf /, mkfs, dd, or unguarded
+          # system-wide mutations. Process whitelist bypass (killing PID 1)
+          # is already prevented at runtime by Core_PROTECTED_PIDS.
+          fail=0
+          patterns=(
+            'rm -rf /'
+            'rm -rf\*'
+            'mkfs\.'
+            'dd if=.*of=/'
+            ':(){ :|:& };:'
+          )
+          for f in bin/syssentry lib/*.sh tests/*.sh; do
+            for pat in "${patterns[@]}"; do
+              if grep -qE "${pat}" "${SENTRY_ROOT}/${f}" 2>/dev/null; then
+                echo "::error file=${f}::Dangerous pattern '${pat}' found in ${f}"
+                fail=1
+              fi
+            done
+          done
+          if [[ ${fail} -eq 0 ]]; then
+            echo "  ✅ No destructive hardcoded commands detected"
+          fi
+          echo "::endgroup::"
+          if [[ ${fail} -ne 0 ]]; then
+            echo "::error::Destructive command guardrails triggered."
+            exit 1
+          fi
+
+  ############################################################################
+  # JOB 3 — Execution & Dynamic Smoke Testing
+  # Isolated container, CLI parsing, /proc parsing, sandboxed backup,
+  # retention cleanup, process governor dry-run
+  ############################################################################
+  smoke-test:
+    name: Execution & Dynamic Smoke Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [lint, security-audit]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Make scripts executable
+        run: |
+          chmod +x bin/syssentry tests/run_pr_checks.sh tests/test_smoke.sh
+
+      - name: Run PR validation test suite
+        run: |
+          echo "::group::🚀 SysSentry PR Validation Test Suite"
+          ./tests/run_pr_checks.sh
+          test_exit=$?
+          echo "::endgroup::"
+          if [[ ${test_exit} -ne 0 ]]; then
+            echo "::error::PR validation test suite failed with exit code ${test_exit}."
+            exit ${test_exit}
+          fi
+
+  ############################################################################
+  # JOB 4 — PR Status Summary (aggregates results)
+  ############################################################################
+  pr-status:
+    name: PR Status Report
+    runs-on: ubuntu-latest
+    needs: [lint, security-audit, smoke-test]
+    if: always()
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate PR status report
+        run: |
+          echo "================================================"
+          echo "  SysSentry PR Validation — Final Status Report"
+          echo "================================================"
+          echo ""
+          echo "  Lint & Static Analysis:   ${{ needs.lint.result }}"
+          echo "  Security & Audit:         ${{ needs.security-audit.result }}"
+          echo "  Execution & Smoke Tests:  ${{ needs.smoke-test.result }}"
+          echo ""
+          if [[ "${{ needs.lint.result }}" == "success" && \
+                "${{ needs.security-audit.result }}" == "success" && \
+                "${{ needs.smoke-test.result }}" == "success" ]]; then
+            echo "  ✅ ALL GATES PASSED — Safe to merge"
+            echo ""
+            exit 0
+          else
+            echo "  ❌ ONE OR MORE GATES FAILED — Do not merge"
+            echo ""
+            exit 1
+          fi

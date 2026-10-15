@@ -16,6 +16,7 @@
 #
 # Namespace: CLI::
 
+# shellcheck source=lib/core.sh
 set -euo pipefail
 
 ###############################################################################
@@ -234,6 +235,11 @@ CLI::main() {
                 shift
                 ;;
             *)
+                if [[ -z "${_subcommand}" ]]; then
+                    Core::log ERROR "Unknown argument: ${1}"
+                    CLI::print_help
+                    return "${Core_ERR_USAGE}"
+                fi
                 _positional+=("${1}")
                 shift
                 ;;

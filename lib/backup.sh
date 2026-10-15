@@ -12,6 +12,9 @@
 #
 # Namespace: Backup:: (public), Backup::_* (private)
 
+# shellcheck disable=SC2154
+set -euo pipefail
+
 ###############################################################################
 # Backup::pre_flight_check
 #

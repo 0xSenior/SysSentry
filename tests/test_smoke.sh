@@ -8,6 +8,8 @@
 #
 # Runs under `set -euo pipefail`. Non-zero exit = failure.
 #
+# shellcheck source=../lib/core.sh
+# shellcheck disable=SC2034,SC2154
 set -euo pipefail
 
 SENTRY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -7,6 +7,7 @@
 #
 # Namespace: Core:: (public), Core::_* (private)
 
+# shellcheck disable=SC2034
 set -euo pipefail
 
 ###############################################################################
@@ -84,21 +85,24 @@ declare -i Core_EXIT_HANDLED=0
 
 declare -a Core_TEMP_FILES=()
 
-declare -r Core_LOG_FILE="${Core_ROOT_DIR}/syssentry.log"
+# Log file path — conditional assignment makes re-sourcing safe.
+: "${Core_LOG_FILE:=${Core_ROOT_DIR}/syssentry.log}"
 
-declare -r Core_C_RESET='\033[0m'
-declare -r Core_C_BOLD='\033[1m'
-declare -r Core_C_DIM='\033[2m'
-declare -r Core_C_RED='\033[31m'
-declare -r Core_C_GREEN='\033[32m'
-declare -r Core_C_YELLOW='\033[33m'
-declare -r Core_C_BLUE='\033[34m'
-declare -r Core_C_MAGENTA='\033[35m'
-declare -r Core_C_CYAN='\033[36m'
-declare -r Core_C_WHITE='\033[37m'
-declare -r Core_C_BG_RED='\033[41m'
-declare -r Core_C_BG_GREEN='\033[42m'
-declare -r Core_C_BG_YELLOW='\033[43m'
+# ANSI colour palette (rich terminal interface)
+# Conditional assignment makes these safe to re-source (idempotent).
+: "${Core_C_RESET:=\033[0m}"
+: "${Core_C_BOLD:=\033[1m}"
+: "${Core_C_DIM:=\033[2m}"
+: "${Core_C_RED:=\033[31m}"
+: "${Core_C_GREEN:=\033[32m}"
+: "${Core_C_YELLOW:=\033[33m}"
+: "${Core_C_BLUE:=\033[34m}"
+: "${Core_C_MAGENTA:=\033[35m}"
+: "${Core_C_CYAN:=\033[36m}"
+: "${Core_C_WHITE:=\033[37m}"
+: "${Core_C_BG_RED:=\033[41m}"
+: "${Core_C_BG_GREEN:=\033[42m}"
+: "${Core_C_BG_YELLOW:=\033[43m}"
 
 ###############################################################################
 # Entity constructors / accessors — SystemSnapshot
@@ -353,10 +357,14 @@ Core::init() {
         done
     fi
 
-    trap 'Core::cleanup; Core::handle_error $? $LINENO' ERR
-    trap 'Core::cleanup; Core::handle_error $? $LINENO' EXIT
-    trap 'Core::cleanup; Core::handle_error $? $LINENO' INT
-    trap 'Core::cleanup; Core::handle_error $? $LINENO' TERM
+    # shellcheck disable=SC2154
+    trap 'Core::handle_error $? $LINENO; Core::cleanup' ERR
+    # shellcheck disable=SC2154
+    trap '_ec=$?; Core::handle_error "$_ec" "$LINENO"; Core::cleanup' EXIT
+    # shellcheck disable=SC2154
+    trap '_ec=$?; Core::handle_error "$_ec" "$LINENO"; Core::cleanup' INT
+    # shellcheck disable=SC2154
+    trap '_ec=$?; Core::handle_error "$_ec" "$LINENO"; Core::cleanup' TERM
 
     Core::log INFO "SysSentry v${Core_VERSION} initialised (pid=$$)"
 
@@ -440,7 +448,7 @@ Core::handle_error() {
     local -r _code="${1:-0}"
     local -r _line="${2:-0}"
 
-    if [[ ${Core_EXIT_HANDLED} -eq 1 ]]; then
+    if [[ ${Core_EXIT_HANDLED:-0} -eq 1 ]]; then
         return 0
     fi
     Core_EXIT_HANDLED=1

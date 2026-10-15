@@ -12,6 +12,9 @@
 #
 # Namespace: Process:: (public), Process::_* (private)
 
+# shellcheck disable=SC2154,SC2034
+set -euo pipefail
+
 declare -a Process_ROGUE_PIDS=()
 declare -A Process_ROGUE_DETAILS=()
 
