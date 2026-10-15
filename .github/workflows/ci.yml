@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  shellcheck:
+    name: ShellCheck Lint & Static Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y shellcheck
+
+      - name: Run ShellCheck on all shell scripts
+        run: |
+          shellcheck -e SC1090,SC1091,SC2086,SC2155,SC2207 \
+            bin/syssentry \
+            lib/core.sh \
+            lib/monitor.sh \
+            lib/process.sh \
+            lib/backup.sh \
+            tests/test_smoke.sh
+
+      - name: Validate bash syntax (no execution)
+        run: |
+          for f in bin/syssentry lib/*.sh tests/*.sh; do
+            bash -n "$f"
+          done
+
+      - name: Verify required files exist
+        run: |
+          test -f bin/syssentry
+          test -f lib/core.sh
+          test -f lib/monitor.sh
+          test -f lib/process.sh
+          test -f lib/backup.sh
+          test -f config/syssentry.conf.example
+          test -f tests/test_smoke.sh
+          test -f LICENSE
+          test -f README.md
+
+      - name: Make entrypoint executable & show help
+        run: |
+          chmod +x bin/syssentry
+          ./bin/syssentry --help
+          ./bin/syssentry --version

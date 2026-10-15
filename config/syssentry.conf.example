@@ -1,0 +1,53 @@
+# =============================================================================
+# SysSentry Configuration Profile
+# Path: config/syssentry.conf
+#
+# Copy this file to config/syssentry.conf and adjust values for your host.
+# Lines beginning with # are comments; blank lines are ignored.
+#
+# Format: KEY=value
+# =============================================================================
+
+# --- Health thresholds -------------------------------------------------------
+# Memory utilisation (%) at which state becomes WARNING / CRITICAL
+warn_mem_percent=80
+crit_mem_percent=90
+
+# CPU utilisation (%) at which state becomes WARNING / CRITICAL
+warn_cpu_percent=75
+crit_cpu_percent=85
+
+# 1-minute load average at which state becomes WARNING / CRITICAL
+warn_load_1min=4.0
+crit_load_1min=8.0
+
+# IO wait (%) at which state becomes WARNING / CRITICAL
+warn_io_wait_percent=15
+crit_io_wait_percent=30
+
+# --- Process governance thresholds -------------------------------------------
+# A process is flagged "rogue" if it exceeds these bounds (percent of total)
+warn_mem_percent_proc=10
+warn_cpu_percent_proc=10
+
+# Grace period (seconds) after SIGTERM before escalating to SIGKILL
+grace_seconds=5
+
+# PIDs that must never be terminated (comma-separated). PID 1, the script,
+# and its parent are protected automatically.
+protected_pids=
+
+# --- Backup settings ---------------------------------------------------------
+# Default source and destination directories
+backup_source=/home
+backup_dest=/var/backups/syssentry
+
+# Backup type: full | incremental
+backup_type=incremental
+
+# Retention window (days). Archives older than this are pruned by `clean`.
+retention_days=7
+
+# --- Logging -----------------------------------------------------------------
+# Log file (absolute path). Defaults to ./syssentry.log next to the repo root.
+log_file=${SENTRY_ROOT}/syssentry.log
