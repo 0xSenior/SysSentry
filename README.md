@@ -47,33 +47,48 @@ Each module exposes a namespaced API (`Core::`, `Monitor::`, `Process::`,
 `Backup::`) and communicates through pseudo-OOP entity structs implemented as
 Bash associative arrays.
 
-```text
-┌─────────────────────────────────────────────────────────────────────┐
-│                       bin/syssentry  (CLI Dispatcher)               │
-│  monitor  |  backup  |  guard  |  clean  | --help | --version       │
-└─────────────┬────────┬─────────┬─────────┬──────────┬───────────────┘
-              │        │         │         │          │
-   ┌──────────▼──┐ ┌────▼────┐ ┌─▼────┐ ┌─▼────┐ ┌───▼────┐
-   │ Monitor::   │ │ Backup:: │ │Proc::│ │Backup│ │ Core:: │
-   │ capture_snapshot│ │ run_backup │ │govern│ │retention│ │ log/init/ │
-   │ classify_health │ │ pre_flight │ │terminate│ │_clean │ │ help    │
-   └─────────────┘ └─────────┘ └──────┘ └──────┘ └────────┘
-              │        │         │         │
-              └────────┴─────────┴────────┘
-                       │
-              ┌────────▼────────┐
-              │   Core:: entities  │
-              │  SystemSnapshot   │
-              │  ProcessRecord    │
-              │  BackupJob        │
-              │ (assoc. arrays)   │
-              └────────┬────────┘
-                       │
-              ┌────────▼────────┐
-              │   /proc, /sys, tar │
-              │   Kernel metrics   │
-              └─────────────────┘
-```
+![SysSentry Architecture](docs/architecture.png)
+
+The diagram above illustrates SysSentry's clean, layered, modular design with
+strict separation of concerns. It flows top-down through four layers:
+
+**Layer 1 — CLI Dispatcher (`bin/syssentry`)**
+The single executable entrypoint exposes six subcommands:
+`monitor`, `backup`, `guard`, `clean`, `--help`, `--version`. Each subcommand
+routes to the appropriate module below.
+
+**Layer 2 — Module APIs (namespaced)**
+Four modules, each exposing a namespaced Bash API:
+- `Monitor::` → `capture_snapshot`, `classify_health`
+- `Backup::` → `run_backup`, `pre_flight`
+- `Proc::` → `govern`, `terminate`
+- `Backup` (retention) → `retention`, `_clean`
+- `Core::` → `log`, `init`, `help`
+
+**Layer 3 — Core Entities (pseudo-OOP structs)**
+Three entity structs implemented as Bash associative arrays:
+- `SystemSnapshot`
+- `ProcessRecord`
+- `BackupJob`
+
+**Layer 4 — Kernel Metrics (data source)**
+The raw data source layer: `/proc`, `/sys`, `tar`.
+
+> **Note:** Save the exported architecture diagram as `docs/architecture.png`
+> (or update the image path above) for the image to render on GitHub.
+
+### How to read the diagram
+
+Each arrow represents a dependency direction: the CLI dispatcher depends on the
+modules, the modules depend on the core entities, and the entities read from
+kernel metrics. This top-down layering means **no module talks directly to
+`/proc`** — all kernel access is funnelled through the `Monitor::` and
+`Process::` modules, which keeps the codebase testable and the /proc parsing
+logic in one place.
+
+The pseudo-OOP entities (`SystemSnapshot`, `ProcessRecord`, `BackupJob`) act as
+structured data carriers between layers, implemented as Bash associative arrays
+so every field access is **O(1)**.
 
 ### Data Flow
 
