@@ -2,23 +2,25 @@
 #
 # lib/core.sh — SysSentry Core Module
 #
-# Pseudo-OOP simulation, structured logger, signal traps, defensive error
-# handling, and runtime configuration cache for the SysSentry system utility.
+# Pseudo-OOP entity structs, structured logger, signal traps, defensive error
+# handling, and O(1) runtime configuration cache.
 #
-# Namespace: Core::
-#
-# Design principles:
-#   - set -euo pipefail (defensive mode)
-#   - Every internal function variable strictly scoped with `local` / `local -r`
-#   - Trap ERR / EXIT / INT / TERM safely
-#   - O(1) configuration lookups via Bash associative arrays
-#   - Zero subshell bottlenecks in hot paths
-#
+# Namespace: Core:: (public), Core::_* (private)
+
+set -euo pipefail
 
 ###############################################################################
-# Strict defensive mode
+# Standardized exit status codes
 ###############################################################################
-set -euo pipefail
+declare -ir Core_EXIT_SUCCESS=0
+declare -ir Core_ERR_GENERAL=1
+declare -ir Core_ERR_USAGE=2
+declare -ir Core_ERR_PERMISSION=11
+declare -ir Core_ERR_RESOURCE_PRESSURE=10
+declare -ir Core_ERR_CONFIG=12
+declare -ir Core_ERR_IO=13
+declare -ir Core_ERR_PROCESS=14
+declare -ir Core_ERR_BACKUP=15
 
 ###############################################################################
 # Global state (namespace: Core)
@@ -30,10 +32,8 @@ declare -r Core_LIB_DIR="${Core_ROOT_DIR}/lib"
 declare -r Core_CONFIG_DIR="${Core_ROOT_DIR}/config"
 declare -r Core_CONFIG_FILE="${Core_CONFIG_DIR}/syssentry.conf"
 
-# Runtime configuration cache (O(1) hash-map lookups)
 declare -A Core_CONFIG=()
 
-# SystemSnapshot entity (pseudo-OOP struct via associative array)
 declare -A Core_SYSTEM_SNAPSHOT=(
     [timestamp]=""
     [hostname]=""
@@ -50,7 +50,6 @@ declare -A Core_SYSTEM_SNAPSHOT=(
     [health_score]="0"
 )
 
-# ProcessRecord entity template (pseudo-OOP struct via associative array)
 declare -A Core_PROCESS_RECORD=(
     [pid]="0"
     [ppid]="0"
@@ -64,7 +63,6 @@ declare -A Core_PROCESS_RECORD=(
     [action_taken]="none"
 )
 
-# BackupJob entity template (pseudo-OOP struct via associative array)
 declare -A Core_BACKUP_JOB=(
     [job_id]=""
     [source]=""
@@ -78,20 +76,16 @@ declare -A Core_BACKUP_JOB=(
     [error_message]=""
 )
 
-# PID protection whitelist (O(1) lookups) — PIDs that must never be terminated
 declare -A Core_PROTECTED_PIDS=()
 
-# Signal / exit guard flags (prevent double-handling)
 declare -i Core_EXITING=0
 declare -i Core_EXIT_CODE=0
+declare -i Core_EXIT_HANDLED=0
 
-# Temp file registry for cleanup
 declare -a Core_TEMP_FILES=()
 
-# Log file path
 declare -r Core_LOG_FILE="${Core_ROOT_DIR}/syssentry.log"
 
-# ANSI colour palette (rich terminal interface)
 declare -r Core_C_RESET='\033[0m'
 declare -r Core_C_BOLD='\033[1m'
 declare -r Core_C_DIM='\033[2m'
@@ -107,13 +101,16 @@ declare -r Core_C_BG_GREEN='\033[42m'
 declare -r Core_C_BG_YELLOW='\033[43m'
 
 ###############################################################################
-# Constructor / accessor — SystemSnapshot
+# Entity constructors / accessors — SystemSnapshot
 ###############################################################################
 
-# SystemSnapshot::new — reset the snapshot entity to defaults
+# Resets the SystemSnapshot entity to default values.
+#
+# @return None
 SystemSnapshot::new() {
     local -r _ts="$(date '+%Y-%m-%d %H:%M:%S')"
     local -r _hn="${HOSTNAME:-$(hostname 2>/dev/null || echo unknown)}"
+
     Core_SYSTEM_SNAPSHOT[timestamp]="${_ts}"
     Core_SYSTEM_SNAPSHOT[hostname]="${_hn}"
     Core_SYSTEM_SNAPSHOT[mem_total_kb]="0"
@@ -129,35 +126,46 @@ SystemSnapshot::new() {
     Core_SYSTEM_SNAPSHOT[health_score]="0"
 }
 
-# SystemSnapshot::get — O(1) accessor for a snapshot field
-# Usage: SystemSnapshot::get mem_percent
+# Returns the value of a SystemSnapshot field in O(1).
+#
+# @param key entity field name
+# @return field value (empty string if unset)
 SystemSnapshot::get() {
     local -r _key="${1:-}"
+
     if [[ -z "${_key}" ]]; then
         Core::log WARN "SystemSnapshot::get called with empty key"
         echo ""
         return 0
     fi
+
     echo "${Core_SYSTEM_SNAPSHOT[${_key}]:-}"
 }
 
-# SystemSnapshot::set — O(1) mutator for a snapshot field
-# Usage: SystemSnapshot::set mem_percent 42.5
+# Sets a SystemSnapshot field in O(1).
+#
+# @param key entity field name
+# @param value value to assign
+# @return None
 SystemSnapshot::set() {
     local -r _key="${1:-}"
     local -r _val="${2:-}"
+
     if [[ -z "${_key}" ]]; then
         Core::log WARN "SystemSnapshot::set called with empty key"
         return 0
     fi
+
     Core_SYSTEM_SNAPSHOT[${_key}]="${_val}"
 }
 
 ###############################################################################
-# Constructor / accessor — ProcessRecord
+# Entity constructors / accessors — ProcessRecord
 ###############################################################################
 
-# ProcessRecord::new — reset the process record entity
+# Resets the ProcessRecord entity to default values.
+#
+# @return None
 ProcessRecord::new() {
     Core_PROCESS_RECORD[pid]="0"
     Core_PROCESS_RECORD[ppid]="0"
@@ -171,13 +179,20 @@ ProcessRecord::new() {
     Core_PROCESS_RECORD[action_taken]="none"
 }
 
-# ProcessRecord::get — O(1) accessor
+# Returns the value of a ProcessRecord field in O(1).
+#
+# @param key entity field name
+# @return field value (empty string if unset)
 ProcessRecord::get() {
     local -r _key="${1:-}"
     echo "${Core_PROCESS_RECORD[${_key}]:-}"
 }
 
-# ProcessRecord::set — O(1) mutator
+# Sets a ProcessRecord field in O(1).
+#
+# @param key entity field name
+# @param value value to assign
+# @return None
 ProcessRecord::set() {
     local -r _key="${1:-}"
     local -r _val="${2:-}"
@@ -185,12 +200,15 @@ ProcessRecord::set() {
 }
 
 ###############################################################################
-# Constructor / accessor — BackupJob
+# Entity constructors / accessors — BackupJob
 ###############################################################################
 
-# BackupJob::new — reset the backup job entity
+# Resets the BackupJob entity to default values.
+#
+# @return None
 BackupJob::new() {
     local -r _jid="sentry-$(date '+%Y%m%d%H%M%S')"
+
     Core_BACKUP_JOB[job_id]="${_jid}"
     Core_BACKUP_JOB[source]=""
     Core_BACKUP_JOB[destination]=""
@@ -203,11 +221,20 @@ BackupJob::new() {
     Core_BACKUP_JOB[error_message]=""
 }
 
-# BackupJob::get / ::set — O(1) accessors
+# Returns the value of a BackupJob field in O(1).
+#
+# @param key entity field name
+# @return field value (empty string if unset)
 BackupJob::get() {
     local -r _key="${1:-}"
     echo "${Core_BACKUP_JOB[${_key}]:-}"
 }
+
+# Sets a BackupJob field in O(1).
+#
+# @param key entity field name
+# @param value value to assign
+# @return None
 BackupJob::set() {
     local -r _key="${1:-}"
     local -r _val="${2:-}"
@@ -218,15 +245,21 @@ BackupJob::set() {
 # Logger
 ###############################################################################
 
-# Core::log — structured persistent event logging to syssentry.log
-# Usage: Core::log LEVEL message [details]
+# Writes a structured event to syssentry.log and, when a terminal is attached,
+# to stdout with ANSI colour coding.
+#
+# @param level log level (DEBUG|INFO|WARN|ERROR|CRIT)
+# @param message event message
+# @param details optional contextual details
+# @return None
 Core::log() {
     local -r _level="${1:-INFO}"
     local -r _message="${2:-}"
     local -r _details="${3:-}"
-    local _ts _colour _line
+    local _ts _colour
 
     _ts="$(date '+%Y-%m-%d %H:%M:%S')"
+
     case "${_level}" in
         DEBUG)  _colour="${Core_C_CYAN}"   ;;
         INFO)   _colour="${Core_C_GREEN}"  ;;
@@ -236,29 +269,41 @@ Core::log() {
         *)      _colour="${Core_C_RESET}"  ;;
     esac
 
-    # Always write to the log file (plain, no ANSI)
     if [[ -n "${Core_LOG_FILE}" && -w "$(dirname "${Core_LOG_FILE}")" ]]; then
-        printf '[%s] [%s] %s%s\n' \
-            "${_ts}" "${_level}" "${_message}" \
-            "$([[ -n "${_details}" ]] && printf ' | %s' "${_details}" || true)" \
-            >> "${Core_LOG_FILE}" 2>/dev/null || true
+        if [[ -n "${_details}" ]]; then
+            printf '[%s] [%s] %s | %s\n' \
+                "${_ts}" "${_level}" "${_message}" "${_details}" \
+                >> "${Core_LOG_FILE}" 2>/dev/null || true
+        else
+            printf '[%s] [%s] %s\n' \
+                "${_ts}" "${_level}" "${_message}" \
+                >> "${Core_LOG_FILE}" 2>/dev/null || true
+        fi
     fi
 
-    # Emit to stdout only when a terminal is attached (rich UI)
     if [[ -t 1 ]]; then
-        _line="[$(Core::colourise "${_level}" "${_ts}")] $(Core::colourise "${_level}" "${_level}") ${_message}"
         if [[ -n "${_details}" ]]; then
-            _line+=" | ${_details}"
+            printf '%b[%s] [%b%s%b] %s | %s%b\n' \
+                "${Core_C_DIM}" "${_ts}" "${_colour}" "${_level}" "${Core_C_RESET}" \
+                "${_message}" "${_details}" "${Core_C_RESET}"
+        else
+            printf '%b[%s] [%b%s%b] %s%b\n' \
+                "${Core_C_DIM}" "${_ts}" "${_colour}" "${_level}" "${Core_C_RESET}" \
+                "${_message}" "${Core_C_RESET}"
         fi
-        printf '%b\n' "${_line}"
     fi
 }
 
-# Core::colourise — wrap text in ANSI colour by log level
-Core::colourise() {
+# Wraps text in ANSI colour based on log level. Private helper.
+#
+# @param level log level
+# @param text text to colourise
+# @return coloured text string
+Core::_colourise() {
     local -r _level="${1:-}"
     local -r _text="${2:-}"
     local _c
+
     case "${_level}" in
         DEBUG) _c="${Core_C_CYAN}"   ;;
         INFO)  _c="${Core_C_GREEN}"  ;;
@@ -267,6 +312,7 @@ Core::colourise() {
         CRIT)  _c="${Core_C_BG_RED}${Core_C_WHITE}" ;;
         *)     _c="${Core_C_RESET}"  ;;
     esac
+
     printf '%b%s%b' "${_c}" "${_text}" "${Core_C_RESET}"
 }
 
@@ -274,32 +320,30 @@ Core::colourise() {
 # Initialisation
 ###############################################################################
 
-# Core::init — bootstrap the application: load config, build PID whitelist,
-# install signal traps, initialise entities.
+# Bootstraps the application: loads configuration, builds the PID protection
+# whitelist, installs signal traps, and initialises all entity structs.
+#
+# @return Core_EXIT_SUCCESS on success
 Core::init() {
-    local _cfg_val _key _val
-
-    # Reset entities
     SystemSnapshot::new
     ProcessRecord::new
     BackupJob::new
 
-    # Load configuration profile into Core_CONFIG hash map (O(1) cache)
-    Core::load_config
+    Core::_load_config
 
-    # Build PID protection whitelist (O(1) lookups)
-    Core_PROTECTED_PIDS[$$]="self"                # this script
-    Core_PROTECTED_PIDS[$PPID]="parent"           # parent shell
-    Core_PROTECTED_PIDS[1]="init"                 # PID 1 (init/systemd)
+    Core_PROTECTED_PIDS[$$]="self"
+    Core_PROTECTED_PIDS[$PPID]="parent"
+    Core_PROTECTED_PIDS[1]="init"
 
-    # Kernel daemons (typical low PIDs) — protect against accidental kill
+    local _pid
     for _pid in 2 3 4 5 6 7 8; do
         Core_PROTECTED_PIDS[$_pid]="kernel-daemon"
     done
 
-    # Any user-configured protected PIDs
+    local _cfg_val
     _cfg_val="$(Core::config_get protected_pids "")"
     if [[ -n "${_cfg_val}" ]]; then
+        local -a _pids=()
         IFS=',' read -ra _pids <<< "${_cfg_val}"
         for _pid in "${_pids[@]}"; do
             _pid="${_pid// /}"
@@ -309,64 +353,72 @@ Core::init() {
         done
     fi
 
-    # Install signal traps (defensive mode)
     trap 'Core::cleanup; Core::handle_error $? $LINENO' ERR
     trap 'Core::cleanup; Core::handle_error $? $LINENO' EXIT
     trap 'Core::cleanup; Core::handle_error $? $LINENO' INT
     trap 'Core::cleanup; Core::handle_error $? $LINENO' TERM
 
     Core::log INFO "SysSentry v${Core_VERSION} initialised (pid=$$)"
+
+    return "${Core_EXIT_SUCCESS}"
 }
 
-# Core::load_config — parse syssentry.conf into Core_CONFIG hash map
-# Supports KEY=value lines, inline comments (#), and blank lines.
-Core::load_config() {
-    local _cfg_file="${1:-${Core_CONFIG_FILE}}"
-    local _line _key _val
+# Parses syssentry.conf into the Core_CONFIG hash map for O(1) lookups.
+# Supports KEY=value lines, inline comments, and blank lines. Private helper.
+#
+# @param config_file path to configuration file (default: Core_CONFIG_FILE)
+# @return Core_EXIT_SUCCESS
+Core::_load_config() {
+    local -r _cfg_file="${1:-${Core_CONFIG_FILE:-}}"
 
-    if [[ ! -f "${_cfg_file}" ]]; then
-        Core::log WARN "Config file not found: ${_cfg_file} (using defaults)"
-        return 0
+    if [[ -z "${_cfg_file}" || ! -f "${_cfg_file}" ]]; then
+        Core::log WARN "Config file not found: ${_cfg_file:-<unset>} (using defaults)"
+        return "${Core_EXIT_SUCCESS}"
     fi
 
+    local _line _key _val
     while IFS= read -r _line || [[ -n "${_line}" ]]; do
-        # Strip leading/trailing whitespace
         _line="${_line#"${_line%%[![:space:]]*}"}"
         _line="${_line%"${_line##*[![:space:]]}"}"
 
-        # Skip blanks and comments
         [[ -z "${_line}" || "${_line}" == \#* ]] && continue
 
-        # Parse KEY=value
         if [[ "${_line}" == *"="* ]]; then
             _key="${_line%%=*}"
             _val="${_line#*=}"
-            # Trim whitespace around key/value
             _key="${_key#"${_key%%[![:space:]]*}"}"
             _key="${_key%"${_key##*[![:space:]]}"}"
             _val="${_val#"${_val%%[![:space:]]*}"}"
             _val="${_val%"${_val##*[![:space:]]}"}"
-            # Strip trailing inline comment from value
+
             if [[ "${_val}" == *" #"* ]]; then
                 _val="${_val%% #*}"
                 _val="${_val%"${_val##*[![:space:]]}"}"
             fi
+
             Core_CONFIG[${_key}]="${_val}"
         fi
     done < "${_cfg_file}"
 
     Core::log DEBUG "Configuration loaded (${#Core_CONFIG[@]} entries)"
+
+    return "${Core_EXIT_SUCCESS}"
 }
 
-# Core::config_get — O(1) config accessor with optional default
-# Usage: Core::config_get key default_value
+# Returns a configuration value in O(1) with an optional default fallback.
+#
+# @param key configuration key
+# @param default default value if key is absent
+# @return configuration value or default
 Core::config_get() {
     local -r _key="${1:-}"
     local -r _default="${2:-}"
+
     if [[ -z "${_key}" ]]; then
         echo "${_default}"
         return 0
     fi
+
     if [[ -v "Core_CONFIG[${_key}]" ]]; then
         echo "${Core_CONFIG[${_key}]}"
     else
@@ -378,18 +430,21 @@ Core::config_get() {
 # Error handling & cleanup
 ###############################################################################
 
-# Core::handle_error — central error handler (no-op on success/exit code 0)
-# Usage: Core::handle_error exit_code line_number
+# Central error handler. Idempotent: only the first non-zero invocation is
+# logged; subsequent calls (e.g. EXIT trap following ERR trap) are no-ops.
+#
+# @param code exit code
+# @param line line number where the error occurred
+# @return None
 Core::handle_error() {
     local -r _code="${1:-0}"
     local -r _line="${2:-0}"
 
-    # Guard against re-entrancy / double handling
-    if [[ ${Core_EXITING} -eq 1 ]]; then
+    if [[ ${Core_EXIT_HANDLED} -eq 1 ]]; then
         return 0
     fi
+    Core_EXIT_HANDLED=1
 
-    # Success path — clean exit
     if [[ ${_code} -eq 0 ]]; then
         Core::log INFO "SysSentry exited cleanly (code 0)"
         return 0
@@ -399,13 +454,14 @@ Core::handle_error() {
     Core_EXIT_CODE=${_code}
 
     Core::log ERROR "SysSentry fatal error (exit code ${_code}) at line ${_line}"
-    # Print a concise stderr message for operators
     printf '%b%s%b: %s exited with code %s at line %s\n' \
         "${Core_C_BG_RED}${Core_C_WHITE}" "FATAL" "${Core_C_RESET}" \
         "${Core_PROJECT_NAME}" "${_code}" "${_line}" >&2
 }
 
-# Core::cleanup — remove temporary files, reset guard flag
+# Removes registered temporary files and resets exit guard state.
+#
+# @return None
 Core::cleanup() {
     local _tmp
     for _tmp in "${Core_TEMP_FILES[@]:-}"; do
@@ -414,10 +470,12 @@ Core::cleanup() {
         fi
     done
     Core_TEMP_FILES=()
-    Core_EXITING=0
 }
 
-# Core::register_temp — register a temp file for later cleanup
+# Registers a temporary file for removal during cleanup.
+#
+# @param file path to temporary file
+# @return None
 Core::register_temp() {
     local -r _f="${1:-}"
     if [[ -n "${_f}" ]]; then
@@ -429,47 +487,63 @@ Core::register_temp() {
 # Helpers
 ###############################################################################
 
-# Core::is_root — true if running as UID 0
+# Returns true (0) if the effective user is root (UID 0).
+#
+# @return Core_EXIT_SUCCESS if root, Core_ERR_PERMISSION otherwise
 Core::is_root() {
     [[ ${EUID:-$(id -u)} -eq 0 ]]
 }
 
-# Core::require_root — abort if not root
+# Aborts with Core_ERR_PERMISSION if not running as root.
+#
+# @return Core_EXIT_SUCCESS if root, Core_ERR_PERMISSION otherwise
 Core::require_root() {
     if ! Core::is_root; then
         Core::log ERROR "Operation requires root privileges (current UID=${EUID:-unknown})"
-        return 1
+        return "${Core_ERR_PERMISSION}"
     fi
-    return 0
+    return "${Core_EXIT_SUCCESS}"
 }
 
-# Core::is_integer — validate integer string
+# Returns true (0) if the string is a valid integer.
+#
+# @param s string to validate
+# @return Core_EXIT_SUCCESS if integer, Core_ERR_GENERAL otherwise
 Core::is_integer() {
     local -r _s="${1:-}"
     [[ "${_s}" =~ ^-?[0-9]+$ ]]
 }
 
-# Core::is_number — validate numeric (int or float)
+# Returns true (0) if the string is a valid number (integer or float).
+#
+# @param s string to validate
+# @return Core_EXIT_SUCCESS if numeric, Core_ERR_GENERAL otherwise
 Core::is_number() {
     local -r _s="${1:-}"
     [[ "${_s}" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]
 }
 
-# Core::msleep — non-blocking-ish sleep with fractional seconds support
+# Sleeps for a fractional number of seconds.
+#
+# @param seconds sleep duration (default: 0.2)
+# @return None
 Core::msleep() {
     local -r _secs="${1:-0.2}"
     sleep "${_secs}"
 }
 
-# Core::banner — print a section header
+# Prints a section banner to stdout when a terminal is attached.
+#
+# @param title section title
+# @return None
 Core::banner() {
     local -r _title="${1:-SysSentry}"
     local _width=60
+
     if [[ -t 1 ]]; then
-        _width=$(tput cols 2>/dev/null || echo 60)
+        _width="$(tput cols 2>/dev/null || echo 60)"
         [[ "${_width}" =~ ^[0-9]+$ ]] || _width=60
     fi
+
     printf '\n%b=== %s ===%b\n\n' "${Core_C_BOLD}${Core_C_CYAN}" "${_title}" "${Core_C_RESET}"
 }
-
-export -f Core::init Core::log Core::config_get Core::require_root 2>/dev/null || true
